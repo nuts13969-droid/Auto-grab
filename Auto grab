@@ -1,0 +1,186 @@
+-- /SVD HUB AUTO GRAB (COMPACT VERSION)
+if not fireproximityprompt then
+    fireproximityprompt = (getgenv and getgenv().fireproximityprompt) or (genv and genv().fireproximityprompt) or function(prompt)
+        pcall(function() prompt:InputHoldBegin() task.wait(0.05) prompt:InputHoldEnd() end)
+    end
+end
+
+local UIS, Players, RunService, TweenService, CoreGui, HttpService = game:GetService("UserInputService"), game:GetService("Players"), game:GetService("RunService"), game:GetService("TweenService"), game:GetService("CoreGui"), game:GetService("HttpService")
+local lp = Players.LocalPlayer
+
+pcall(function()
+    if CoreGui:FindFirstChild("SVD_HUB_AUTO_GRAB") then CoreGui:FindFirstChild("SVD_HUB_AUTO_GRAB"):Destroy() end
+    if lp:FindFirstChild("PlayerGui") and lp.PlayerGui:FindFirstChild("SvdBarGui") then lp.PlayerGui.SvdBarGui:Destroy() end
+end)
+
+local CONFIG_FILE, cfg = "SvdHubAutoGrab_Config.json", {}
+local function saveConfig() if writefile then pcall(writefile, CONFIG_FILE, HttpService:JSONEncode(cfg)) end end
+local function loadConfig()
+    if isfile and isfile(CONFIG_FILE) then
+        local ok, raw = pcall(readfile, CONFIG_FILE)
+        if ok and raw then local ok2, d = pcall(HttpService.JSONDecode, HttpService, raw) if ok2 and d then cfg = d; return end end
+    end
+    cfg = { hubPos = { px = 40, py = 20 }, radius = 12, duration = 0.15, active = true }
+    saveConfig()
+end
+loadConfig()
+task.spawn(function() while true do task.wait(8) saveConfig() end end)
+
+local Screen = Instance.new("ScreenGui", CoreGui)
+Screen.Name = "SVD_HUB_AUTO_GRAB"
+Screen.ResetOnSpawn = false
+
+local C = {
+    Black = Color3.fromRGB(10, 12, 18), Gray = Color3.fromRGB(30, 35, 45),
+    White = Color3.fromRGB(255, 255, 255), TogOff = Color3.fromRGB(25, 30, 40),
+    MainBlue = Color3.fromRGB(0, 102, 255)
+}
+
+local function New(class, props)
+    local o = Instance.new(class)
+    for k, v in pairs(props) do if k ~= "Parent" then o[k] = v end end
+    o.Parent = props.Parent
+    return o
+end
+
+local function MakeDrag(frame, onDrop)
+    local dragging, activeInput, startPos, frameStart = false, nil, Vector2.zero, Vector2.zero
+    frame.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, activeInput = true, input
+            startPos = Vector2.new(input.Position.X, input.Position.Y)
+            frameStart = Vector2.new(frame.AbsolutePosition.X, frame.AbsolutePosition.Y)
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if dragging and input == activeInput then
+            local delta = Vector2.new(input.Position.X, input.Position.Y) - startPos
+            frame.Position = UDim2.new(0, frameStart.X + delta.X, 0, frameStart.Y + delta.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if dragging and input == activeInput then dragging = false; if onDrop then onDrop(frame) end end
+    end)
+end
+
+local isStealing, stealStartTime, STEAL_RADIUS, STEAL_DURATION = false, 0, cfg.radius or 12, cfg.duration or 0.15
+local stealConn, progressConn, stealActive_ = nil, nil, cfg.active == true
+local animalCache, promptCache, stealCache = {}, {}, {}
+local grabBarFill, grabBarPercent
+
+local function resetStealBar()
+    if grabBarFill then grabBarFill.Size = UDim2.fromScale(0, 1) end
+    if grabBarPercent then grabBarPercent.Text = "SYSTEM READY" end
+end
+
+local function scanPlot(plot)
+    if not plot or not plot:IsA("Model") or (plot:FindFirstChild("PlotSign") and plot.PlotSign:FindFirstChild("YourBase") and plot.PlotSign.YourBase.Enabled) then return end
+    local podiums = plot:FindFirstChild("AnimalPodiums") or plot:FindFirstChild("Podiums")
+    if not podiums then return end
+    for _, pod in ipairs(podiums:GetChildren()) do
+        if pod:IsA("Model") and pod:FindFirstChild("Base") then
+            local uid = plot.Name .. "_" .. pod.Name
+            local exists = false
+            for _, ex in ipairs(animalCache) do if ex.uid == uid then exists = true; break end end
+            if not exists then
+                table.insert(animalCache, { name = pod.Name, plot = plot.Name, slot = pod.Name, worldPosition = pod:GetPivot().Position, uid = uid })
+            end
+        end
+    end
+end
+
+local function execSteal(prompt, name)
+    local data = stealCache[prompt] or { holdCallbacks = {}, triggerCallbacks = {}, ready = true }
+    if not data.ready then return false end
+    if not stealCache[prompt] then
+        local o1, c1 = pcall(getconnections, prompt.PromptButtonHoldBegan)
+        if o1 then for _, c in ipairs(c1) do if type(c.Function) == "function" then table.insert(data.holdCallbacks, c.Function) end end end
+        local o2, c2 = pcall(getconnections, prompt.Triggered)
+        if o2 then for _, c in ipairs(c2) do if type(c.Function) == "function" then table.insert(data.triggerCallbacks, c.Function) end end end
+        stealCache[prompt] = data
+    end
+    data.ready, isStealing, stealStartTime = false, true, tick()
+    if grabBarPercent then grabBarPercent.Text = "GRABBING " .. (name or "ITEM") end
+    if progressConn then progressConn:Disconnect() end
+    progressConn = RunService.Heartbeat:Connect(function()
+        if not isStealing then progressConn:Disconnect(); return end
+        local prog = math.clamp((tick() - stealStartTime) / STEAL_DURATION, 0, 1)
+        if grabBarFill then grabBarFill.Size = UDim2.fromScale(prog, 1) end
+        if grabBarPercent then grabBarPercent.Text = math.floor(prog*100).."% COMPLETED" end
+    end)
+    task.spawn(function()
+        for _, fn in ipairs(data.holdCallbacks) do task.spawn(fn) end
+        task.wait(STEAL_DURATION)
+        for _, fn in ipairs(data.triggerCallbacks) do task.spawn(fn) end
+        task.wait(0.02)
+        if progressConn then progressConn:Disconnect(); progressConn = nil end
+        resetStealBar()
+        data.ready, isStealing = true, false
+    end)
+    return true
+end
+
+task.spawn(function()
+    local plots = workspace:WaitForChild("Plots", 10)
+    if plots then
+        for _, p in ipairs(plots:GetChildren()) do scanPlot(p) end
+        plots.ChildAdded:Connect(function(p) task.wait(0.5); scanPlot(p) end)
+        while task.wait(5) do animalCache, promptCache = {}, {}; for _, p in ipairs(plots:GetChildren()) do scanPlot(p) end end
+    end
+end)
+
+stealConn = RunService.Heartbeat:Connect(function()
+    if not stealActive_ or isStealing then return end
+    local char = lp.Character
+    local hrp = char and (char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("UpperTorso"))
+    if not hrp then return end
+    for _, ad in ipairs(animalCache) do
+        if (hrp.Position - ad.worldPosition).Magnitude <= STEAL_RADIUS then
+            if promptCache[ad.uid] and promptCache[ad.uid].Parent then
+                execSteal(promptCache[ad.uid], ad.name); break
+            else
+                local p = workspace.Plots:FindFirstChild(ad.plot)
+                local base = p and p.AnimalPodiums:FindFirstChild(ad.slot) and p.AnimalPodiums[ad.slot]:FindFirstChild("Base")
+                local prompt = base and base:FindFirstChild("Spawn") and base.Spawn:FindFirstChildOfClass("ProximityPrompt")
+                if prompt then promptCache[ad.uid] = prompt; execSteal(prompt, ad.name); break end
+            end
+        end
+    end
+end)
+
+-- UI SYSTEM (HORIZONTAL PANEL STYLE)
+local HubFrame = New("Frame", { Name = "SvdHub", Size = UDim2.new(0, 460, 0, 36), Position = UDim2.new(0, cfg.hubPos.px, 0, cfg.hubPos.py), BackgroundColor3 = C.Black, Parent = Screen, Active = true })
+Instance.new("UICorner", HubFrame).CornerRadius = UDim.new(0, 6)
+New("UIStroke", { Thickness = 1.5, Color = C.Gray, Parent = HubFrame })
+MakeDrag(HubFrame, function(f) cfg.hubPos = {px = f.AbsolutePosition.X, py = f.AbsolutePosition.Y}; saveConfig() end)
+
+New("TextLabel", { Size = UDim2.new(0, 140, 1, 0), Position = UDim2.new(0, 10, 0, 0), Text = "/svd hub auto grab", Font = Enum.Font.GothamBlack, TextColor3 = C.White, TextSize = 12, TextXAlignment = Enum.TextXAlignment.Left, BackgroundTransparency = 1, Parent = HubFrame })
+
+local Pill = New("Frame", { Size = UDim2.new(0, 34, 0, 16), Position = UDim2.new(0, 160, 0.5, -8), BackgroundColor3 = stealActive_ and C.MainBlue or C.TogOff, Parent = HubFrame })
+Instance.new("UICorner", Pill).CornerRadius = UDim.new(1, 0)
+local Dot = New("Frame", { Size = UDim2.new(0, 10, 0, 10), Position = stealActive_ and UDim2.new(1, -13, 0.5, -5) or UDim2.new(0, 3, 0.5, -5), BackgroundColor3 = C.White, Parent = Pill })
+Instance.new("UICorner", Dot).CornerRadius = UDim.new(1, 0)
+
+local function setToggle(val)
+    stealActive_, cfg.active = val, val; saveConfig()
+    TweenService:Create(Pill, TweenInfo.new(0.15), {BackgroundColor3 = val and C.MainBlue or C.TogOff}):Play()
+    TweenService:Create(Dot, TweenInfo.new(0.15), {Position = val and UDim2.new(1, -13, 0.5, -5) or UDim2.new(0, 3, 0.5, -5)}):Play()
+end
+New("TextButton", { Size = UDim2.new(0, 45, 1, 0), Position = UDim2.new(0, 155, 0, 0), BackgroundTransparency = 1, Text = "", Parent = HubFrame }).MouseButton1Click:Connect(function() setToggle(not stealActive_) end)
+
+local RadBox = New("TextBox", { Size = UDim2.new(0, 55, 0, 22), Position = UDim2.new(0, 205, 0.5, -11), Text = "RAD: "..STEAL_RADIUS, BackgroundColor3 = C.TogOff, TextColor3 = C.White, Font = Enum.Font.GothamBold, TextSize = 9, Parent = HubFrame })
+Instance.new("UICorner", RadBox).CornerRadius = UDim.new(0, 4)
+RadBox.FocusLost:Connect(function() local n = tonumber(RadBox.Text:match("%d+")) if n then STEAL_RADIUS = math.clamp(n, 1, 100); cfg.radius = STEAL_RADIUS; saveConfig() end RadBox.Text = "RAD: "..STEAL_RADIUS end)
+
+local DurBox = New("TextBox", { Size = UDim2.new(0, 55, 0, 22), Position = UDim2.new(0, 265, 0.5, -11), Text = "DUR: "..STEAL_DURATION, BackgroundColor3 = C.TogOff, TextColor3 = C.White, Font = Enum.Font.GothamBold, TextSize = 9, Parent = HubFrame })
+Instance.new("UICorner", DurBox).CornerRadius = UDim.new(0, 4)
+DurBox.FocusLost:Connect(function() local n = tonumber(DurBox.Text:match("[%d%.]+")) if n then STEAL_DURATION = math.clamp(n, 0.01, 2); cfg.duration = STEAL_DURATION; saveConfig() end DurBox.Text = "DUR: "..STEAL_DURATION end)
+
+local BarBg = New("Frame", { Size = UDim2.new(0, 120, 0, 18), Position = UDim2.new(0, 330, 0.5, -9), BackgroundColor3 = C.TogOff, Parent = HubFrame })
+Instance.new("UICorner", BarBg).CornerRadius = UDim.new(0, 4)
+grabBarPercent = New("TextLabel", { Size = UDim2.new(1, 0, 1, 0), BackgroundTransparency = 1, Text = "SYSTEM READY", TextColor3 = C.White, Font = Enum.Font.GothamBold, TextSize = 8, ZIndex = 3, Parent = BarBg })
+grabBarFill = New("Frame", { Size = UDim2.fromScale(0, 1), BackgroundColor3 = C.MainBlue, ZIndex = 2, Parent = BarBg })
+Instance.new("UICorner", grabBarFill).CornerRadius = UDim.new(0, 4)
+
+setToggle(stealActive_)
+print("/SVD HUB AUTO GRAB LOADED!")
